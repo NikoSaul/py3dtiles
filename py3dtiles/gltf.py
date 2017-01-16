@@ -15,19 +15,17 @@ class GlTF(object):
     def to_array(self): # bgl
         scene = json.dumps(self.header, separators=(',', ':'))
 
-        scene = struct.pack(str(len(scene)) + 's', scene.encode('utf8'))
+        #scene = struct.pack(str(len(scene)) + 's', scene.encode('utf8'))
         # body must be 4-byte aligned
-        trailing = len(scene) % 4
-        if trailing != 0:
-            scene = scene + struct.pack(str(trailing) + 's', b' ' * trailing)
+        scene += ' '*(4 - len(scene) % 4)
 
-        binaryHeader = struct.pack('4s', "glTF".encode('utf8')) + \
-                    struct.pack('I', 1) + \
-                    struct.pack('I', 20 + len(self.body) + len(scene)) + \
-                    struct.pack('I', len(scene)) + \
-                    struct.pack('I', 0)
+        binaryHeader = np.fromstring("glTF", dtype=np.uint8)
+        binaryHeader2 = np.array([1,
+                                  20 + len(self.body) + len(scene),
+                                  len(scene),
+                                  0], dtype=np.uint32)
 
-        return binaryHeader + scene + self.body
+        return np.concatenate((binaryHeader, binaryHeader2.view(np.uint8), np.fromstring(scene, dtype=np.uint8), np.frombuffer(self.body, dtype=np.uint8)))
 
     @staticmethod
     def from_array(positions_dtype, positions):
@@ -36,7 +34,7 @@ class GlTF(object):
         return glTF
 
     @staticmethod
-    def from_wkb(wkbs, bboxes, transform, binary = True, uri = None):
+    def from_wkb(wkbs, bboxes, transform, binary = True, batched = True, uri = None):
         """
         Parameters
         ----------
@@ -78,6 +76,7 @@ class GlTF(object):
         binVertices = []
         binIndices = []
         binNormals = []
+        binIds = []
         nVertices = []
         nIndices = []
         for i in range(0,len(nodes)):
@@ -88,19 +87,22 @@ class GlTF(object):
             binNormals.append(b''.join(ptsIdx[1]))
             nVertices.append(len(ptsIdx[0]))
             nIndices.append(len(ptsIdx[2]))
+            if batched:
+                binIds.append(np.full(len(ptsIdx[0]), i, dtype=np.uint16))
 
-        glTF.header = compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb, binary, uri)
-        glTF.body = compute_binary(binVertices, binIndices, binNormals)
+        glTF.header = compute_header(binVertices, binIndices, binNormals, binIds, nVertices, nIndices, bb, transform, binary, batched, uri)
+        glTF.body = compute_binary(binVertices, binIndices, binNormals, binIds)
 
         return glTF
 
-def compute_binary(binVertices, binIndices, binNormals):
-    binary = b''.join(binVertices)
-    binary = binary + b''.join(binNormals)
-    binary = binary + b''.join(binIndices)
-    return binary
+def compute_binary(binVertices, binIndices, binNormals, binIds):
+    bv = b''.join(binVertices)
+    bi = b''.join(binIndices)
+    bn = b''.join(binNormals)
+    bid = b''.join(binIds)
+    return bv + bn + bi + bid
 
-def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb, bgltf, uri):
+def compute_header(binVertices, binIndices, binNormals, binIds, nVertices, nIndices, bb, transform, bgltf, batched, uri):
     # Buffer
     meshNb = len(binVertices)
     sizeIdx = []
@@ -120,12 +122,6 @@ def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb,
 
     # Buffer view
     bufferViews = {
-        'BV_indices': {
-            'buffer': "binary_glTF",
-            'byteLength': sum(sizeIdx),
-            'byteOffset': 2 * sum(sizeVce),
-            'target': 34963
-        },
         'BV_vertices': {
             'buffer': "binary_glTF",
             'byteLength': sum(sizeVce),
@@ -138,19 +134,24 @@ def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb,
             'byteOffset': sum(sizeVce),
             'target': 34962
         },
+        'BV_indices': {
+            'buffer': "binary_glTF",
+            'byteLength': sum(sizeIdx),
+            'byteOffset': 2 * sum(sizeVce),
+            'target': 34963
+        }
     }
+    if batched:
+        bufferViews['BV_ids'] = {
+            'buffer': "binary_glTF",
+            'byteLength': sum(sizeVce) / 6,
+            'byteOffset': sum(sizeVce) + sum(sizeIdx),
+            'target': 34962
+        }
 
     # Accessor
     accessors = {}
     for i in range(0, meshNb):
-        accessors["AI_" + str(i)] = {
-            'bufferView': "BV_indices",
-            'byteOffset': sum(sizeIdx[0:i]),
-            'byteStride': 2,
-            'componentType': 5123,
-            'count': nIndices[i],
-            'type': "SCALAR"
-        }
         accessors["AV_" + str(i)] = {
             'bufferView': "BV_vertices",
             'byteOffset': sum(sizeVce[0:i]),
@@ -171,6 +172,23 @@ def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb,
             'min': [-1,-1,-1],
             'type': "VEC3"
         }
+        accessors["AI_" + str(i)] = {
+            'bufferView': "BV_indices",
+            'byteOffset': sum(sizeIdx[0:i]),
+            'byteStride': 2,
+            'componentType': 5123,
+            'count': nIndices[i],
+            'type': "SCALAR"
+        }
+        if batched:
+            accessors["AD_" + str(i)] = {
+                'bufferView': "BV_ids",
+                'byteOffset': sum(sizeVce[0:i]) / 6,
+                'byteStride': 2,
+                'componentType': 5123,
+                'count': nVertices[i],
+                'type': "SCALAR"
+            }
 
     # Meshes
     meshes = {}
@@ -186,6 +204,8 @@ def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb,
                 "mode": 4
             }]
         }
+        if batched:
+            meshes["M" + str(i)]['primitives'][0]['attributes']['BATCHID'] = "AD_" + str(i)
 
     # Nodes
     nodes = {
@@ -222,6 +242,24 @@ def compute_header(binVertices, binIndices, binNormals, nVertices, nIndices, bb,
             }
         }
     }
+
+    # Technique for batched glTF
+    """if batched:
+        header['materials']['defaultMaterial']['technique'] = "T0"
+        header['techniques'] = {
+            "T0": {
+                "attributes": {
+                    "a_batchId": "batchId"
+                },
+                "parameters": {
+                    "batchId": {
+                        "semantic": "_BATCHID",
+                        "type": 5123
+                    }
+                }
+            }
+        }
+    """
 
     if len(extensions) != 0:
         header["extensionsUsed"] = extensions
