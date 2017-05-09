@@ -31,13 +31,15 @@ class B3dm(Tile):
 
 
 class B3dmHeader(TileHeader):
-    BYTELENGTH = 24
+    BYTELENGTH = 28
 
     def __init__(self):
         self.type = TileType.BATCHED3DMODEL
         self.magic_value = "b3dm"
         self.version = 1
         self.tile_byte_length = 0
+        self.ft_json_byte_length = 0
+        self.ft_bin_byte_length = 0
         self.bt_json_byte_length = 0
         self.bt_bin_byte_length = 0
         self.bt_length = 0  # number of models in the batch
@@ -47,6 +49,8 @@ class B3dmHeader(TileHeader):
 
         header_arr2 = np.array([self.version,
                                 self.tile_byte_length,
+                                self.ft_json_byte_length,
+                                self.ft_bin_byte_length,
                                 self.bt_json_byte_length,
                                 self.bt_bin_byte_length,
                                 self.bt_length], dtype=np.uint32)
@@ -90,9 +94,11 @@ class B3dmHeader(TileHeader):
         h.magic_value = "b3dm"
         h.version = struct.unpack("i", array[4:8])[0]
         h.tile_byte_length = struct.unpack("i", array[8:12])[0]
-        h.bt_json_byte_length = struct.unpack("i", array[12:16])[0]
-        h.bt_bin_byte_length = struct.unpack("i", array[16:20])[0]
-        h.bt_length = struct.unpack("i", array[20:24])[0]
+        h.ft_json_byte_length = struct.unpack("i", array[12:16])[0]
+        h.ft_bin_byte_length = struct.unpack("i", array[16:20])[0]
+        h.bt_json_byte_length = struct.unpack("i", array[20:24])[0]
+        h.bt_bin_byte_length = struct.unpack("i", array[24:28])[0]
+        h.bt_length = struct.unpack("i", array[28:32])[0]
 
         h.type = TileType.BATCHED3DMODEL
 
